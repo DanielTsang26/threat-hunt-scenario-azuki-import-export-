@@ -146,6 +146,9 @@ On November 19, 2025, an external threat actor gained unauthorized access to the
  _Shows initial RDP unlock event._   
  _Attacker IP: 88.97.178.12._   
 
+ This is essentially where everything all started. The main table was used to investigate what was going on in the range of the particular time period. The information that was found that gave way
+ suspicious actions was basically "unlock" from the account that was considered as a malicious intent. This followed the basis of unwanted access.
+
 ```kql
 DeviceLogonEvents
 | where DeviceName == "azuki-sl"
@@ -158,7 +161,9 @@ DeviceLogonEvents
 
 
 **Query 2 – Malicious Execution**  
- _Shows creation of hidden staging directory._   
+ _Shows creation of hidden staging directory._  
+
+ From here, the investigation continued over on what was the malicious intent was and where would it be: Of course, this took a little bit of time and it turns out that checking the DeviceProcessEvent table will give a lot of  information away. The discovery phase revealed that there was a directory that was being created and it was hidden from any of the users that may have access to the machine. 
 
  ```kql
 DeviceProcessEvents
@@ -176,6 +181,8 @@ DeviceProcessEvents
 **Query 3 – Network Reconnaissance**
 
 _Shows the enumeration of network topology to identify lateral movement opportunities and high-value targets._  
+
+Of course, following the bad actor's attack pattern, they most likely would want to figure out more information of what the machine was like in terms of what is on their network. This was the next phase, gather information, so the table that was investigated was to dive further into the DeviceProcessEvent. This showed that there was lateral movement and it showed a lot of information that was being gathered. This was executed by: ARP.exe -a.
 
 ```kql
 DeviceProcessEvents
@@ -200,6 +207,8 @@ DeviceProcessEvents
 
 _Scheduled task created: “Windows Update Check”._   
 
+At this point, the information was gathered, so "smoke" and "mirrors" was the main intent of what the bad actor would do here. They want to not be noticed immediately and would require some distraction. This led me to believe that there would be some sort of persistence of a "distraction" for the intruder to get what they want from the machine. This was gather further more into what the device was doing. A deeper dive into the current table DeviceProcessEvent showed that a persistent event continued more frequently than any other event. This was the distraction from the bad actor. 
+
 ```kql
 DeviceProcessEvents
 | where AccountName contains "kenji"
@@ -217,6 +226,10 @@ DeviceProcessEvents
 
 _Shows the attacker has establish staging locations to organise tools and stolen data._  
 
+"Where was the bad actor trying to get the information and leave quickly?" was the main point of concern. So, following the same pattern, it most likely falls into the DeviceProcessEvents that most likely
+was from the last query. From there "mkdir", "attrib", "md", and "New-Item", were a few targets after taking a look at what was found in the table. 
+
+
 ```kql
 DeviceProcessEvents
 | where DeviceName == "azuki-sl"
@@ -232,6 +245,11 @@ DeviceProcessEvents
 **Query 6 – COMMAND & CONTROL - C2 Server Address**
 
 _Shows Command and control infrastructure allows attackers to remotely control compromised systems. Identifying C2 servers enables network blocking and infrastructure tracking._  
+
+At this point, looking into infrastructure,this is mostly following the bad actor's attack pattern from an attack framework perspective (MITRE ATT&CK). This again, looking into what the general list of programs 
+to see what was going on in the network structure. Figuring out where the bad actor is coming from and how they are residing in the infrastructure in that time range was important. This can be observed from the list of
+commandlines that were occuring. At this point, knowing the RemoteIP and the RemotePort were the most crucial parts of the information, but more or less there was a pattern - persistence and utility abuse from download. 
+That leads to only one IP: 78.141.196.6
 
 ```kql
 DeviceNetworkEvents
@@ -255,6 +273,8 @@ DeviceNetworkEvents
 
 _Shows Credential dumping tools extract authentication secrets from system memory._ 
 
+Moving back to DeviceProcessEvents to evaluate what information was being moved around and what tool (.exe) was being used. Again, more attack patterns being followed by the standard framework (MITRE ATT&CK). After investigating the information from a general standpoint, more evaluation was needed and there was a deepdive. The deepdive was to investigate what folder path was evaluated and the discovery showed that there was only two particular files, but on closer view that made this more suspicious was the processcommandline: "mm.exe" privileger:debug sekurlsalogonpasswords exit. This essentially was the tool that was the problematic issue: mm.exe.
+
 ```kql
 DeviceProcessEvents
 | where DeviceName == "azuki-sl"
@@ -264,22 +284,19 @@ DeviceProcessEvents
 | project Timestamp, AccountName,FolderPath,FileName, ActionType, ProcessCommandLine
 | order by Timestamp asc
 ```
-```kql
-DeviceProcessEvents
-| where DeviceName == "azuki-sl"
-| where AccountName contains "kenji"
-| where Timestamp between (datetime(2025-11-19) .. datetime(2025-11-20))
-| where FolderPath contains "WindowsCache"
-| project Timestamp, AccountName,FolderPath,FileName, ActionType, ProcessCommandLine
-| order by Timestamp asc
-```
+
 <img width="1072" height="507" alt="image" src="https://github.com/user-attachments/assets/3abacac6-3de8-4cae-aa59-03b115c1c959" />
 
 
 
-**Query 7 - COLLECTION - Data Staging Archive**
+**Query 7 - COLLECTION - Data Staging Archive | Exfilitration Channel** 
 
 _Shows attackers compress stolen data for efficient exfiltration._ 
+
+At this point, the bad actor will most likely create a zip file to steal data and that was where I had to look elsewhere from another table being DeviceFileEvents. So, it was a simple search
+where having specific information gather throughout the investigation and what the time range was, account name, and now it was just the file name.  Discovery was "export-data.zip." It was sent to a 
+communication platform: "Discord."
+
 
 
 ```kql
@@ -296,9 +313,32 @@ DeviceFileEvents
 <img width="1070" height="162" alt="image" src="https://github.com/user-attachments/assets/f8eccf61-b718-4c5e-b0a8-3cf010efdf2a" />
 
 
+
+```kql
+DeviceNetworkEvents
+| where InitiatingProcessAccountName contains "kenji"
+| where DeviceName == "azuki-sl"
+| where InitiatingProcessCommandLine contains "zip"
+| where Timestamp between (datetime(2025-11-19) .. datetime(2025-11-20))
+| project Timestamp,InitiatingProcessAccountName, RemoteUrl, InitiatingProcessCommandLine, RemoteIP, RemotePort, LocalPort 
+| order by Timestamp asc
+
+```
+
+
+
+
+<img width="1043" height="166" alt="image" src="https://github.com/user-attachments/assets/6c9c603b-ade1-4b52-a5e2-8f920621496b" />
+
+
 **Query 8  ANTI-FORENSICS - Log Tampering**
 
 _Shows order of log clearing can indicate attacker priorities and sophistication._
+
+Throughout this investigation, the bad actor seems to be leaving a trail of information and the thought of that was most likely not the case to keep that trail around. So, following that thought process, they most likely
+tamper with the information by removing/ clearing the logs. So, DeviceProcessEvents was the table to investigate as it seems to be the majority of where the investigation was. From a general perspective, it was not too difficult to locate where the logs would be erased. Using a specific file name "wevtutil.exe" showed that "Security" was the first to go.
+
+
 
 ```kql
 DeviceProcessEvents
@@ -317,6 +357,9 @@ DeviceProcessEvents
 
 _Shows hidden administrator accounts provide alternative access for future operations._
 
+Again, bad actors don't normally close the system, so there's usually a backdoor. This was how the attack pattern was playing out when following the MITRE ATT&CK framework. At this point, as the investigation was coming to an end and
+most of this was just cleanup. Looking into DeviceProcessEvents and diving into what account was added into the list of accounts that was part of the machine was pretty much what was needed to see what was done to the machine and the account was: Support.
+
 ```kql
 DeviceProcessEvents
 | where DeviceName == "azuki-sl"
@@ -334,6 +377,9 @@ DeviceProcessEvents
 **Query 10  EXECUTION - Malicious Script**
 
 _Shows the initial attack script reveals the entry point and automation method used in the compromise._
+
+This was more clean up, the bad actor left some lingering/existing programs from previous actions that were implemented from earlier in the investigation. This shows by looking into what was done from an earlier part of the timeline. 
+From here we notice that the scripts were: wsupdate.ps1. This also is related to svchost.exe proving the persistance of the windows update still existing in the machine.
 
 
 ```kql
@@ -355,6 +401,9 @@ DeviceFileEvents
 
 _Shows the lateral movement targets are selected based on their access to sensitive data or network privileges._
 
+Moving further into this part of the investigation was to examine who they were attacking. With all the necessary information that was noted, the bad actor was mainly attacking an IP: 10.1.0.188. This was 
+mainly from a deduction from what file name was being used and from the record that was shown from that file.
+
 ```kql
 DeviceNetworkEvents
 | where DeviceName == "azuki-sl"
@@ -371,6 +420,9 @@ DeviceNetworkEvents
 **Query 12  LATERAL MOVEMENT - Remote Access Tool**
 
 _Shows the built-in remote access tools._
+
+The tool was simply found from the IP address and it showed that it was called the " mstsc.exe"
+
 
 ```kql
 DeviceProcessEvents
